@@ -3,11 +3,31 @@ import os
 import json
 from pydotplus.graphviz import graph_from_dot_file
 
+class Interface(object):
+    def __init__(self, node, lid):
+        self.node = node
+        self.lid = lid
+
+    def __str__(self):
+        return self.node.name + "@" + str(self.lid)
+
+    def __repr__(self):
+        return self.__str__()
+
+    def __eq__(self, other):
+        return self.node.name == other.node.name and self.lid == other.lid
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
 class Link(object):
     def __init__(self, link_info):
         self.lid = link_info["id"]
         self.protocol = link_info["protocol"]
         self.port = link_info["port"]
+
+    def __eq__(self, other):
+        return self.lid == other.lid and self.protocol == other.protocol and self.port == other.port
 
 class Forwarder(object):
     def __init__(self, name):
@@ -63,8 +83,16 @@ class Graph(object):
         self.nodes = {}
         self.edges = set()
 
+    def neighbors_by_interface(self, interface):
+        nset = []
+        for edge in self.edges:
+            if edge[0] == interface:
+                nset.append(edge[1])
+            elif edge[1] == interface:
+                nset.append(edge[0])
+        return nset
+
     def add_node(self, x, v):
-        print x, v
         if not isinstance(v, Forwarder):
             raise Exception("Invalid node type")
         self.nodes[x] = v
@@ -75,12 +103,8 @@ class Graph(object):
         else:
             raise Exception("Node %s not present" % (str(x)))
 
-    def add_edge(self, x, y):
-        if not isinstance(x, Link):
-            raise Exception("Invalid source node type for edge")
-        if not isinstance(y, Link):
-            raise Exception("Invalid destination node type for edge")
-        self.edges.add((x, y))
+    def add_edge(self, i1, i2):
+        self.edges.add((i1, i2))
 
 class TopologyBuilder(object):
     def __init__(self, fname):
@@ -89,6 +113,7 @@ class TopologyBuilder(object):
         self.nodes = self.graph.get_node_list()
 
         self.net = Graph()
+        self.producers = []
 
         self.constructor_map = {}
         self.constructor_map["C"] = self.build_router
@@ -106,6 +131,7 @@ class TopologyBuilder(object):
         for link_info in links:
             producer.add_link(Link(link_info))
         self.net.add_node(name, producer)
+        self.producers.append(producer)
 
     def parse_node_label(self, label):
         data = json.loads(str(eval(label)).replace('\'','\"'))
@@ -120,31 +146,60 @@ class TopologyBuilder(object):
         l1_id = label[0]
         l2_id = label[1]
 
-        print l1_id, l2_id
-
         l1 = self.net.get_node(source).get_link(l1_id)
         l2 = self.net.get_node(sink).get_link(l2_id)
 
-        self.net.add_edge(l1, l2)
+        i1 = Interface(self.net.get_node(source), l1)
+        i2 = Interface(self.net.get_node(sink), l2)
 
-## TODO
-# - implement build_ROLE functions to classify nodes
-# - create class for a node and instance for each type (based on role)
-# - create class for the forwarder that holds the FIB and link table
-# - implement Dijkstra algorithm to propogate routes from the producer to consumer
+        self.net.add_edge(i1, i2)
 
-builder = TopologyBuilder(sys.argv[1])
+    def propogate_route_from_node(self, parent_interface, interface, route):
+        parent = parent_interface.node
+        interface.node.add_route(route, parent_interface.node.links[parent_interface.lid.lid])
 
-# 1. build networkX graph from dot file
-for node_id in builder.nodes:
-    node = node_id.get_label()
-    builder.parse_node_label(node)
+        node = interface.node
+        for link_id in node.links:
+            upstream_interface = Interface(node, node.links[link_id])
+            neighbors = self.net.neighbors_by_interface(upstream_interface)
+            neighbors = filter(lambda i : i != parent_interface, neighbors)
+            for neighbor_interface in neighbors:
+                self.propogate_route_from_node(upstream_interface, neighbor_interface, route)
 
-for link_id in builder.edges:
-    source = str(link_id.get_source())
-    sink = str(link_id.get_destination())
-    builder.parse_link_label(source, sink, link_id.get_label())
+    def propogate_routes(self):
+        ''' Propogate routes from each producer to the rest of the network using DSF.
+        '''
+        for producer in self.producers:
+            for route in producer.anchors:
+                for link_id in producer.links:
+                    upstream_interface = Interface(producer, producer.links[link_id])
+                    neighbors = self.net.neighbors_by_interface(upstream_interface)
+                    for neighbor_interface in neighbors:
+                        self.propogate_route_from_node(upstream_interface, neighbor_interface, route)
 
-# 2. propogate routes to every link in the graph (according to a routing protocol?)
-# 3. update link labels
-# 4. export new dot file
+
+if __name__ == "__main__":
+    builder = TopologyBuilder(sys.argv[1])
+
+    for node_id in builder.nodes:
+        node = node_id.get_label()
+        builder.parse_node_label(node)
+
+    for link_id in builder.edges:
+        source = str(link_id.get_source())
+        sink = str(link_id.get_destination())
+        builder.parse_link_label(source, sink, link_id.get_label())
+
+    for node in builder.net.nodes:
+        print node, builder.net.nodes[node].routes
+
+    builder.propogate_routes()
+
+    for node in builder.net.nodes:
+        print node, builder.net.nodes[node].routes
+
+# TODO
+# 1. export new DOT file
+# 2. rename Graph to Network
+# 3. plug in Network to the configuration generator
+
