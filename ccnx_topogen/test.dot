@@ -1,0 +1,7 @@
+graph path {
+    n1 [shape=box, label="{'role': 'C', 'name': 'n1', 'links': [{'id': 'l1', 'protocol' : 'udp', 'port': 9695 }]}"]
+    n2 [shape=box, label="{'role': 'R', 'name': 'n2', 'links': [{'id': 'l1', 'protocol' : 'udp', 'port': 9696 }, {'id': 'l2', 'protocol' : 'udp', 'port': 9695 }]}"]
+    n3 [shape=box, label="{'role': 'P', 'name': 'n3', 'links': [{'id': 'l1', 'protocol' : 'udp', 'port': 9695 }], 'routes': ['/foo']}"]
+    n1 -- n2 [label="l1,l1"]
+    n2 -- n3 [label="l2,l1"]
+}
