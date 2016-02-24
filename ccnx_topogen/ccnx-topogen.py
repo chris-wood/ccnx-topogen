@@ -29,6 +29,12 @@ class Link(object):
     def __eq__(self, other):
         return self.lid == other.lid and self.protocol == other.protocol and self.port == other.port
 
+    def __str__(self):
+        return str(self.lid) + ":" + str(self.protocol) + "@" + str(self.port)
+
+    def __repr__(self):
+        return self.__str__()
+
 class Forwarder(object):
     def __init__(self, name):
         self.name = name
@@ -57,11 +63,39 @@ class Producer(Forwarder):
         Forwarder.__init__(self, name)
         self.anchors = anchors
 
-class MetisConfigGenerator(object): # metis configuration file (bash script)
+class Config(object):
+    ''' A configuration will be pickled down and then 
+    run on a forwarder. It is the responsibility of the 
+    orchestra slave to accept commands from the 
+    orchestra master to run. 
+    '''
     def __init__(self):
         pass
 
+    def setup_interfaces(self):
+        # run setup commands
+        pass
+
+    def configure_interfaces(self):
+        # run connect commands
+        pass
+
+    def finalize(self):
+        # run finalization commands
+        pass
+
+class MetisConfigGenerator(object): # metis configuration file (bash script)
+    def __init__(self):
+        self.config = []
+        pass
+
     def generate_config_for(self, forwarder):
+        for link in forwarder.links:
+            # TODO: write the link creation line to the config file
+            # add listener udp udp1 127.0.0.1 9696
+            # add connection udp conn1 127.0.0.1 9697 127.0.0.1 9696
+            # add route conn1 lci:/ 1
+            pass
         pass
 
 class AthenaConfigGenerator(object): # athenactl (bash script)
@@ -78,7 +112,7 @@ class CCNLiteConfigGenerator(object): # ccn-ctl program (bash script)
     def generate_config_for(self, forwarder):
         pass
 
-class Graph(object):
+class Network(object):
     def __init__(self):
         self.nodes = {}
         self.edges = set()
@@ -112,7 +146,7 @@ class TopologyBuilder(object):
         self.edges = self.graph.get_edge_list()
         self.nodes = self.graph.get_node_list()
 
-        self.net = Graph()
+        self.net = Network()
         self.producers = []
 
         self.constructor_map = {}
@@ -196,10 +230,9 @@ if __name__ == "__main__":
     builder.propogate_routes()
 
     for node in builder.net.nodes:
-        print node, builder.net.nodes[node].routes
+        print node, builder.net.nodes[node].links, builder.net.nodes[node].routes
 
 # TODO
 # 1. export new DOT file
-# 2. rename Graph to Network
 # 3. plug in Network to the configuration generator
 
