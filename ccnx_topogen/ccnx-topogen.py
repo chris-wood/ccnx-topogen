@@ -3,7 +3,7 @@ import os
 import json
 from pydotplus.graphviz import graph_from_dot_file
 
-class Interface(object):
+class Link(object):
     def __init__(self, node, lid):
         self.node = node
         self.lid = lid
@@ -20,11 +20,12 @@ class Interface(object):
     def __ne__(self, other):
         return not self.__eq__(other)
 
-class Link(object):
-    def __init__(self, link_info):
-        self.lid = link_info["id"]
-        self.protocol = link_info["protocol"]
-        self.port = link_info["port"]
+class Face(object):
+    def __init__(self, parent, face_info):
+        self.parent = parent
+        self.lid = face_info["id"]
+        self.protocol = face_info["protocol"]
+        self.port = face_info["port"]
 
     def __eq__(self, other):
         return self.lid == other.lid and self.protocol == other.protocol and self.port == other.port
@@ -36,73 +37,121 @@ class Link(object):
         return self.__str__()
 
 class Forwarder(object):
-    def __init__(self, name):
+    def __init__(self, name, address):
         self.name = name
+        self.address = address
         self.routes = {}
-        self.links = {}
+        self.faces = {}
 
-    def add_link(self, l):
-        self.links[l.lid] = l
+    def add_face(self, l):
+        self.faces[l.lid] = l
 
-    def get_link(self, lid):
-        if lid in self.links:
-            return self.links[lid]
+    def get_face(self, fid):
+        if fid in self.faces:
+            return self.faces[fid]
         else:
-            raise Exception("Link %s not present at %s" % (lid, str(self)))
+            raise Exception("Face %s not present at %s" % (fid, str(self)))
 
-    def add_route(self, r, lid):
+    def add_route(self, r, link):
         if r not in self.routes:
             self.routes[r] = []
-        self.routes[r].append(lid)
+        self.routes[r].append(link)
 
     def __str__(self):
         return "FWD[%s]" % (self.name)
 
 class Producer(Forwarder):
-    def __init__(self, name, anchors):
-        Forwarder.__init__(self, name)
+    def __init__(self, name, address, anchors):
+        Forwarder.__init__(self, name, address)
         self.anchors = anchors
 
-class Config(object):
-    ''' A configuration will be pickled down and then 
-    run on a forwarder. It is the responsibility of the 
-    orchestra slave to accept commands from the 
-    orchestra master to run. 
-    '''
+class ConfigEngine(object):
     def __init__(self):
         pass
 
+    def execute(self, command):
+        subprocess.call(command.split(" "))
+
+class Config(object):
+    ''' A configuration will be pickled down and then
+    run on a forwarder. It is the responsibility of the
+    orchestra slave to accept commands from the
+    orchestra master to run.
+    '''
+    def __init__(self, engine):
+        self.setups = []
+        self.configures = []
+        self.finals = []
+        self.engine = engine
+
+    def add_setup_command(self, command):
+        self.setups.append(command)
+
+    def add_configure_command(self, command):
+        self.configures.append(command)
+
+    def add_finalize_command(self, command):
+        self.finals.append(command)
+
     def setup_interfaces(self):
-        # run setup commands
-        pass
+        for setup in self.setups:
+            self.engine.execute(setup)
 
     def configure_interfaces(self):
-        # run connect commands
-        pass
+        for configure in self.configures:
+            self.engine.execute(configure)
 
     def finalize(self):
-        # run finalization commands
-        pass
+        for final in self.finals:
+            self.engine.execute(final)
+
+    def __str__(self):
+        return "\n".join(self.setups + self.configures + self.finals)
+
+    def __repr__(self):
+        return __str__(self)
 
 class MetisConfigGenerator(object): # metis configuration file (bash script)
     def __init__(self):
-        self.config = []
-        pass
+        self.config = Config(ConfigEngine())
+
+    # TODO: write the link creation line to the config file
+    # add listener udp udp1 127.0.0.1 9696
+    # add connection udp conn1 127.0.0.1 9697 127.0.0.1 9696
+    # add route conn1 lci:/ 1
 
     def generate_config_for(self, forwarder):
-        for link in forwarder.links:
-            # TODO: write the link creation line to the config file
-            # add listener udp udp1 127.0.0.1 9696
-            # add connection udp conn1 127.0.0.1 9697 127.0.0.1 9696
-            # add route conn1 lci:/ 1
-            pass
-        pass
+        def make_connection_id(cid):
+            return "conn%s" % str(cid)
+
+        for link in forwarder.faces:
+            link = forwarder.faces[link]
+            cmd = "add listener %s %s %s %s" % (link.protocol, link.lid, link.parent.address, link.port)
+            self.config.add_setup_command(cmd)
+
+        index = 1
+        for route_key in forwarder.routes:
+            for face_pair in forwarder.routes[route_key]:
+                source_face, dest_face = face_pair
+
+                connection_id = make_connection_id(index)
+                dest_face = dest_face.parent.get_face(dest_face.lid)
+                source_face = source_face.parent.get_face(source_face.lid)
+
+                cmd = "add connection %s %s %s %s %s %s" % (dest_face.protocol, connection_id, source_face.parent.address, source_face.port, dest_face.parent.address, dest_face.port)
+                index += 1
+                self.config.add_configure_command(cmd)
+
+                cmd = "add route %s %s %s" % (connection_id, route_key, str(1))
+                self.config.add_finalize_command(cmd)
+        return self.config
 
 class AthenaConfigGenerator(object): # athenactl (bash script)
     def __init__(self):
         pass
 
     def generate_config_for(self, forwarder):
+        # TODO
         pass
 
 class CCNLiteConfigGenerator(object): # ccn-ctl program (bash script)
@@ -119,6 +168,8 @@ class Network(object):
 
     def neighbors_by_interface(self, interface):
         nset = []
+        interface = interface.parent.get_face(interface.lid)
+
         for edge in self.edges:
             if edge[0] == interface:
                 nset.append(edge[1])
@@ -148,68 +199,71 @@ class TopologyBuilder(object):
 
         self.net = Network()
         self.producers = []
+        self.forwarders = []
 
         self.constructor_map = {}
         self.constructor_map["C"] = self.build_router
         self.constructor_map["R"] = self.build_router
         self.constructor_map["P"] = self.build_producer
 
-    def build_router(self, name, links, routes = []):
-        consumer = Forwarder(name)
-        for link_info in links:
-            consumer.add_link(Link(link_info))
+    def build_router(self, name, address, faces, routes = []):
+        consumer = Forwarder(name, address)
+        for face_info in faces:
+            consumer.add_face(Face(consumer, face_info))
         self.net.add_node(name, consumer)
+        self.forwarders.append(consumer)
 
-    def build_producer(self, name, links, routes = []):
-        producer = Producer(name, routes)
-        for link_info in links:
-            producer.add_link(Link(link_info))
+    def build_producer(self, name, address, faces, routes = []):
+        producer = Producer(name, address, routes)
+        for face_info in faces:
+            producer.add_face(Face(producer, face_info))
         self.net.add_node(name, producer)
         self.producers.append(producer)
+        self.forwarders.append(producer)
 
     def parse_node_label(self, label):
         data = json.loads(str(eval(label)).replace('\'','\"'))
         role = data["role"]
         name = data["name"]
-        links = data["links"]
+        address = data["address"]
+        faces = data["faces"]
         routes = {} if "routes" not in data else data["routes"]
-        return self.constructor_map[role](name, links, routes)
+        return self.constructor_map[role](name, address, faces, routes)
 
     def parse_link_label(self, source, sink, label):
         label = label.strip().replace("\"", "").split(",")
         l1_id = label[0]
         l2_id = label[1]
 
-        l1 = self.net.get_node(source).get_link(l1_id)
-        l2 = self.net.get_node(sink).get_link(l2_id)
+        l1 = self.net.get_node(source).get_face(l1_id)
+        l2 = self.net.get_node(sink).get_face(l2_id)
 
-        i1 = Interface(self.net.get_node(source), l1)
-        i2 = Interface(self.net.get_node(sink), l2)
+        self.net.add_edge(l1, l2)
 
-        self.net.add_edge(i1, i2)
+    def propogate_route_from_node(self, parent_face, interface, route):
 
-    def propogate_route_from_node(self, parent_interface, interface, route):
-        parent = parent_interface.node
-        interface.node.add_route(route, parent_interface.node.links[parent_interface.lid.lid])
+        interface.parent.add_route(route, (interface, parent_face))
 
-        node = interface.node
-        for link_id in node.links:
-            upstream_interface = Interface(node, node.links[link_id])
-            neighbors = self.net.neighbors_by_interface(upstream_interface)
-            neighbors = filter(lambda i : i != parent_interface, neighbors)
-            for neighbor_interface in neighbors:
-                self.propogate_route_from_node(upstream_interface, neighbor_interface, route)
+        ## TODO: comment
+        node = interface.parent
+        for face_id in node.faces:
+            upstream_face = node.faces[face_id]
+            neighbors = self.net.neighbors_by_interface(upstream_face)
+            neighbors = filter(lambda i : i != parent_face, neighbors)
+            for neighbor_face in neighbors:
+                self.propogate_route_from_node(upstream_face, neighbor_face, route)
 
     def propogate_routes(self):
         ''' Propogate routes from each producer to the rest of the network using DSF.
         '''
         for producer in self.producers:
             for route in producer.anchors:
-                for link_id in producer.links:
-                    upstream_interface = Interface(producer, producer.links[link_id])
-                    neighbors = self.net.neighbors_by_interface(upstream_interface)
-                    for neighbor_interface in neighbors:
-                        self.propogate_route_from_node(upstream_interface, neighbor_interface, route)
+                for face_id in producer.faces:
+                    ## TODO: comment
+                    upstream_face = producer.faces[face_id]
+                    neighbors = self.net.neighbors_by_interface(upstream_face)
+                    for neighbor_face in neighbors:
+                        self.propogate_route_from_node(upstream_face, neighbor_face, route)
 
 
 if __name__ == "__main__":
@@ -219,10 +273,10 @@ if __name__ == "__main__":
         node = node_id.get_label()
         builder.parse_node_label(node)
 
-    for link_id in builder.edges:
-        source = str(link_id.get_source())
-        sink = str(link_id.get_destination())
-        builder.parse_link_label(source, sink, link_id.get_label())
+    for face_id in builder.edges:
+        source = str(face_id.get_source())
+        sink = str(face_id.get_destination())
+        builder.parse_link_label(source, sink, face_id.get_label())
 
     for node in builder.net.nodes:
         print node, builder.net.nodes[node].routes
@@ -230,9 +284,15 @@ if __name__ == "__main__":
     builder.propogate_routes()
 
     for node in builder.net.nodes:
-        print node, builder.net.nodes[node].links, builder.net.nodes[node].routes
+        print node, builder.net.nodes[node].faces, builder.net.nodes[node].routes
+
+    generator = MetisConfigGenerator()
+
+    for forwarder in builder.forwarders:
+        config = generator.generate_config_for(forwarder)
+        print forwarder, "\n", config, "\n"
 
 # TODO
-# 1. export new DOT file
-# 3. plug in Network to the configuration generator
-
+# 1. write athena configuration
+# 2. write tests for parsers
+# 3. remove duplicate link creation
